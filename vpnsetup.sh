@@ -6,7 +6,7 @@
 # DO NOT RUN THIS SCRIPT ON YOUR PC OR MAC! THIS IS MEANT TO BE RUN
 # ON YOUR DEDICATED SERVER OR VPS!
 #
-# Copyright (C) 2014-2016 Lin Song
+# Copyright (C) 2014-2016 Lin Song <linsongui@gmail.com>
 # Based on the work of Thomas Sarlandie (Copyright 2012)
 #
 # This work is licensed under the Creative Commons Attribution-ShareAlike 3.0
@@ -19,12 +19,12 @@
 
 # Define your own values for these variables
 # - IPsec pre-shared key, VPN username and password
-# - All values MUST be quoted using 'single quotes'
+# - All values MUST be placed inside 'single quotes'
 # - DO NOT use these characters within values:  \ " '
 
-VPN_IPSEC_PSK=$VPN_IPSEC_PSK
-VPN_USER=$VPN_USER
-VPN_PASSWORD=$VPN_PASSWORD
+YOUR_IPSEC_PSK=''
+YOUR_USERNAME=''
+YOUR_PASSWORD=''
 
 # Important Notes:   https://git.io/vpnnotes
 # Setup VPN Clients: https://git.io/vpnclients
@@ -33,51 +33,68 @@ VPN_PASSWORD=$VPN_PASSWORD
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-if [ "$(uname)" = "Darwin" ]; then
-  echo 'DO NOT run this script on your Mac! It should only be used on a server.'
-  exit 1
-fi
+echoerr() { echo "$@" 1>&2; }
 
 os_type="$(lsb_release -si 2>/dev/null)"
 if [ "$os_type" != "Ubuntu" ] && [ "$os_type" != "Debian" ]; then
-  echo "This script only supports Ubuntu/Debian."
+  echoerr "This script only supports Ubuntu/Debian."
   exit 1
 fi
 
 if [ -f /proc/user_beancounters ]; then
-  echo "This script does NOT support OpenVZ VPS."
-  echo "Try alternative: https://github.com/Nyr/openvpn-install"
+  echoerr "This script does not support OpenVZ VPS."
   exit 1
 fi
 
 if [ "$(id -u)" != 0 ]; then
-  echo "Script must be run as root. Try 'sudo sh $0'"
+  echoerr "Script must be run as root. Try 'sudo sh $0'"
   exit 1
 fi
 
-if [ ! -f /sys/class/net/eth0/operstate ]; then
-cat <<'EOF'
+eth0_state=$(cat /sys/class/net/eth0/operstate 2>/dev/null)
+if [ -z "$eth0_state" ] || [ "$eth0_state" = "down" ]; then
+cat 1>&2 <<'EOF'
 Network interface 'eth0' is not available. Aborting.
 
-Run 'cat /proc/net/dev' to find the name of the active network interface,
-then search and replace ALL 'eth0' and 'eth+' in this script with that name.
+Run 'cat /proc/net/dev' to find the active network interface,
+then use it to replace ALL 'eth0' and 'eth+' in this script.
 EOF
 exit 1
 fi
 
+[ -n "$YOUR_IPSEC_PSK" ] && VPN_IPSEC_PSK="$YOUR_IPSEC_PSK"
+[ -n "$YOUR_USERNAME" ] && VPN_USER="$YOUR_USERNAME"
+[ -n "$YOUR_PASSWORD" ] && VPN_PASSWORD="$YOUR_PASSWORD"
+
 if [ -z "$VPN_IPSEC_PSK" ] && [ -z "$VPN_USER" ] && [ -z "$VPN_PASSWORD" ]; then
+  echo "VPN credentials not set by user. Generating random PSK and password..."
+  echo
   VPN_IPSEC_PSK="$(< /dev/urandom tr -dc 'A-HJ-NPR-Za-km-z2-9' | head -c 16)"
   VPN_USER=vpnuser
   VPN_PASSWORD="$(< /dev/urandom tr -dc 'A-HJ-NPR-Za-km-z2-9' | head -c 16)"
 fi
 
 if [ -z "$VPN_IPSEC_PSK" ] || [ -z "$VPN_USER" ] || [ -z "$VPN_PASSWORD" ]; then
-  echo "VPN credentials cannot be empty. Edit the script and re-enter them."
+  echoerr "All VPN credentials must be specified. Edit the script and re-enter them."
   exit 1
 fi
 
-echo "VPN setup in progress... Please be patient."
-echo
+if [ "$(sed 's/\..*//' /etc/debian_version 2>/dev/null)" = "7" ]; then
+cat <<'EOF'
+IMPORTANT: Workaround required for Debian 7 (Wheezy).
+You must first run the script at: https://git.io/vpndeb7
+If not already done so, press Ctrl-C to interrupt now.
+
+Pausing for 60 seconds...
+
+EOF
+sleep 60
+fi
+
+cat <<'EOF'
+VPN setup in progress... Please be patient.
+
+EOF
 
 # Create and change to working dir
 mkdir -p /opt/src
@@ -85,23 +102,11 @@ cd /opt/src || exit 1
 
 # Update package index
 export DEBIAN_FRONTEND=noninteractive
-apt-get -yqq update
+apt-get -yq update
 
 # Make sure basic commands exist
 apt-get -yq install wget dnsutils openssl
 apt-get -yq install iproute gawk grep sed net-tools
-
-if [ "$(sed 's/\..*//' /etc/debian_version)" = "7" ]; then
-cat <<'EOF'
-
-IMPORTANT: Workaround required for Debian 7 (Wheezy).
-First, run the script at: https://git.io/vpndebian7
-If not already done so, press Ctrl-C to interrupt.
-
-Pausing for 60 seconds...
-EOF
-sleep 60
-fi
 
 cat <<'EOF'
 
@@ -114,12 +119,12 @@ EOF
 
 # In case auto IP discovery fails, you may manually enter server IPs here.
 # If your server only has a public IP, put that public IP on both lines.
-PUBLIC_IP=$VPN_PUBLIC_IP
-PRIVATE_IP=$VPN_PRIVATE_IP
+PUBLIC_IP=${VPN_PUBLIC_IP:-''}
+PRIVATE_IP=${VPN_PRIVATE_IP:-''}
 
 # In Amazon EC2, these two variables will be retrieved from metadata
-[ -z "$PUBLIC_IP" ] && PUBLIC_IP=$(wget --retry-connrefused -t 3 -T 15 -qO- 'http://169.254.169.254/latest/meta-data/public-ipv4')
-[ -z "$PRIVATE_IP" ] && PRIVATE_IP=$(wget --retry-connrefused -t 3 -T 15 -qO- 'http://169.254.169.254/latest/meta-data/local-ipv4')
+[ -z "$PUBLIC_IP" ] && PUBLIC_IP=$(wget -t 3 -T 15 -qO- 'http://169.254.169.254/latest/meta-data/public-ipv4')
+[ -z "$PRIVATE_IP" ] && PRIVATE_IP=$(wget -t 3 -T 15 -qO- 'http://169.254.169.254/latest/meta-data/local-ipv4')
 
 # Try to find IPs for non-EC2 servers
 [ -z "$PUBLIC_IP" ] && PUBLIC_IP=$(dig +short myip.opendns.com @resolver1.opendns.com)
@@ -130,11 +135,11 @@ PRIVATE_IP=$VPN_PRIVATE_IP
 # Check IPs for correct format
 IP_REGEX="^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$"
 if ! printf %s "$PUBLIC_IP" | grep -Eq "$IP_REGEX"; then
-  echo "Cannot find valid public IP. Edit the script and manually enter IPs."
+  echoerr "Cannot find valid public IP. Edit the script and manually enter IPs."
   exit 1
 fi
 if ! printf %s "$PRIVATE_IP" | grep -Eq "$IP_REGEX"; then
-  echo "Cannot find valid private IP. Edit the script and manually enter IPs."
+  echoerr "Cannot find valid private IP. Edit the script and manually enter IPs."
   exit 1
 fi
 
@@ -152,21 +157,21 @@ apt-get -yq install fail2ban
 # Compile and install Libreswan
 swan_ver=3.17
 swan_file="libreswan-${swan_ver}.tar.gz"
-swan_url="https://download.libreswan.org/$swan_file"
-wget -t 3 -T 30 -nv -O "$swan_file" "$swan_url"
-[ "$?" != "0" ] && { echo "Cannot download Libreswan source. Aborting."; exit 1; }
+swan_url1="https://download.libreswan.org/$swan_file"
+swan_url2="https://github.com/libreswan/libreswan/archive/v${swan_ver}.tar.gz"
+wget -t 3 -T 30 -nv -O "$swan_file" "$swan_url1" || wget -t 3 -T 30 -nv -O "$swan_file" "$swan_url2"
+[ "$?" != "0" ] && { echoerr "Cannot download Libreswan source. Aborting."; exit 1; }
 /bin/rm -rf "/opt/src/libreswan-$swan_ver"
 tar xzf "$swan_file" && /bin/rm -f "$swan_file"
-cd "libreswan-$swan_ver" || { echo "Cannot enter Libreswan source dir. Aborting."; exit 1; }
-# Workaround for Libreswan compile issues
-cat > Makefile.inc.local <<EOF
-WERROR_CFLAGS =
-EOF
+cd "libreswan-$swan_ver" || { echoerr "Cannot enter Libreswan source dir. Aborting."; exit 1; }
+echo "WERROR_CFLAGS =" > Makefile.inc.local
 make -s programs && make -s install
 
-# Verify the install
+# Verify the install and clean up
+cd /opt/src || exit 1
+/bin/rm -rf "/opt/src/libreswan-$swan_ver"
 /usr/local/sbin/ipsec --version 2>/dev/null | grep -qs "$swan_ver"
-[ "$?" != "0" ] && { echo; echo "Libreswan $swan_ver failed to build. Aborting."; exit 1; }
+[ "$?" != "0" ] && { echoerr; echoerr "Libreswan $swan_ver failed to build. Aborting."; exit 1; }
 
 # Create IPsec (Libreswan) config
 sys_dt="$(date +%Y-%m-%d-%H:%M:%S)"
@@ -193,6 +198,8 @@ conn shared
   dpddelay=30
   dpdtimeout=120
   dpdaction=clear
+  ike=3des-sha1,aes-sha1
+  phase2alg=3des-sha1,aes-sha1
 
 conn l2tp-psk
   auto=add
@@ -200,11 +207,8 @@ conn l2tp-psk
   leftnexthop=%defaultroute
   leftprotoport=17/1701
   rightprotoport=17/%any
-  rightsubnetwithin=0.0.0.0/0
   type=transport
   auth=esp
-  ike=3des-sha1,aes-sha1
-  phase2alg=3des-sha1,aes-sha1
   also=shared
 
 conn xauth-psk
@@ -258,12 +262,12 @@ ms-dns 8.8.4.4
 noccp
 auth
 crtscts
-idle 1800
 mtu 1280
 mru 1280
 lock
-lcp-echo-failure 10
-lcp-echo-interval 60
+proxyarp
+lcp-echo-failure 4
+lcp-echo-interval 30
 connect-delay 5000
 EOF
 
@@ -339,13 +343,14 @@ cat > /etc/iptables.rules <<EOF
 -A INPUT -p udp --dport 1701 -j DROP
 -A INPUT -j DROP
 -A FORWARD -m conntrack --ctstate INVALID -j DROP
+# To disallow (DROP) traffic between VPN clients themselves, uncomment these lines:
+# -A FORWARD -i ppp+ -o ppp+ -s 192.168.42.0/24 -d 192.168.42.0/24 -j DROP
+# -A FORWARD -s 192.168.43.0/24 -d 192.168.43.0/24 -j DROP
 -A FORWARD -i eth+ -o ppp+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 -A FORWARD -i ppp+ -o eth+ -j ACCEPT
+-A FORWARD -i ppp+ -o ppp+ -s 192.168.42.0/24 -d 192.168.42.0/24 -j ACCEPT
 -A FORWARD -i eth+ -d 192.168.43.0/24 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 -A FORWARD -s 192.168.43.0/24 -o eth+ -j ACCEPT
-# To allow traffic between VPN clients themselves, uncomment these lines:
-# -A FORWARD -i ppp+ -o ppp+ -s 192.168.42.0/24 -d 192.168.42.0/24 -j ACCEPT
-# -A FORWARD -s 192.168.43.0/24 -d 192.168.43.0/24 -j ACCEPT
 -A FORWARD -j DROP
 COMMIT
 *nat
@@ -366,10 +371,12 @@ iptables -I INPUT 3 -p udp --dport 1701 -j DROP
 iptables -I FORWARD 1 -m conntrack --ctstate INVALID -j DROP
 iptables -I FORWARD 2 -i eth+ -o ppp+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 iptables -I FORWARD 3 -i ppp+ -o eth+ -j ACCEPT
-iptables -I FORWARD 4 -i eth+ -d 192.168.43.0/24 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-iptables -I FORWARD 5 -s 192.168.43.0/24 -o eth+ -j ACCEPT
-# iptables -I FORWARD 6 -i ppp+ -o ppp+ -s 192.168.42.0/24 -d 192.168.42.0/24 -j ACCEPT
-# iptables -I FORWARD 7 -s 192.168.43.0/24 -d 192.168.43.0/24 -j ACCEPT
+iptables -I FORWARD 4 -i ppp+ -o ppp+ -s 192.168.42.0/24 -d 192.168.42.0/24 -j ACCEPT
+iptables -I FORWARD 5 -i eth+ -d 192.168.43.0/24 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+iptables -I FORWARD 6 -s 192.168.43.0/24 -o eth+ -j ACCEPT
+# To disallow (DROP) traffic between VPN clients themselves, uncomment these lines:
+# iptables -I FORWARD 2 -i ppp+ -o ppp+ -s 192.168.42.0/24 -d 192.168.42.0/24 -j DROP
+# iptables -I FORWARD 3 -s 192.168.43.0/24 -d 192.168.43.0/24 -j DROP
 iptables -A FORWARD -j DROP
 iptables -t nat -I POSTROUTING -s 192.168.43.0/24 -o eth+ -m policy --dir out --pol none -j SNAT --to-source "$PRIVATE_IP"
 iptables -t nat -I POSTROUTING -s 192.168.42.0/24 -o eth+ -j SNAT --to-source "$PRIVATE_IP"
@@ -437,7 +444,7 @@ EOF
 fi
 
 # Reload sysctl.conf
-sysctl -q -p
+sysctl -e -q -p
 
 # Update file attributes
 chmod +x /etc/rc.local
@@ -450,9 +457,12 @@ iptables-restore < /etc/iptables.rules
 ip6tables-restore < /etc/ip6tables.rules >/dev/null 2>&1
 
 # Restart services
-service fail2ban restart
-service ipsec restart
-service xl2tpd restart
+service fail2ban stop >/dev/null 2>&1
+service ipsec stop >/dev/null 2>&1
+service xl2tpd stop >/dev/null 2>&1
+service fail2ban start
+service ipsec start
+service xl2tpd start
 
 cat <<EOF
 
